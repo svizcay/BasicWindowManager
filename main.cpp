@@ -71,6 +71,8 @@ int main(int argc, char *argv[])
 
 	// create a window
 	window = xcb_generate_id(connection);	// ask for an ID like in OpenGL
+	std::string windowTitle = "My first window";
+	std::string windowTitleIconified = "My first window (iconified)";
 	std::cout << "new window's id: " << window << std::endl;
 	mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
 	value[0] = screen->white_pixel;
@@ -81,12 +83,32 @@ int main(int argc, char *argv[])
 					window,								// create a window using this ID
 					screen->root,						// setting root as parent window
 					100, 100,							// (x,y) offset from top left corner
-					100, 100,							// window's width and height
+					600, 600,							// window's width and height
 					10,									// window's border
 					XCB_WINDOW_CLASS_INPUT_OUTPUT,		// (uint16t) "_class" (TODO: check this out)
 					screen->root_visual,				// (xcb_visualid_t) "visual" (TODO: check this out)
 					mask,									// (uint32t) "value_mask" (TODO: check this out)
 					value								// (const uint32_t) "*value_list" (TODO: check this out)
+	);
+	// set window's name
+	xcb_change_property(connection,
+					XCB_PROP_MODE_REPLACE,				// modes: REPLACE, PREPEND, APPEND
+					window,								// windows's id
+					XCB_ATOM_WM_NAME,							// property's name
+					XCB_ATOM_STRING,								// property's data type
+					8,									// format of the property (8, 16, 32) // TODO: check this out
+					windowTitle.size(),					// property's length
+					windowTitle.c_str()
+	);
+	// set window iconified name
+	xcb_change_property(connection,
+					XCB_PROP_MODE_REPLACE,				// modes: REPLACE, PREPEND, APPEND
+					window,								// windows's id
+					XCB_ATOM_WM_ICON_NAME,							// property's name
+					XCB_ATOM_STRING,								// property's data type
+					8,									// format of the property (8, 16, 32) // TODO: check this out
+					windowTitleIconified.size(),					// property's length
+					windowTitleIconified.c_str()
 	);
 	// to make window visible use xcb_map_window. this function returns a cookie
 	xcb_map_window(connection, window);
