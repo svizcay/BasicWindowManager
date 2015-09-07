@@ -29,3 +29,7 @@
 
 # vim's swp files
 *.swp
+
+# binary files
+wm
+coloredWindow
