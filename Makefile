@@ -1,8 +1,8 @@
 CC=g++
-CFLAGS=-c -Wall -O3
-CLIBS=-lxcb -lxcb-util
+CFLAGS=-c -Wall -O3 -std=c++11
+CLIBS=-lxcb -lxcb-composite
 
-all: wm coloredWindow
+all: wm 
 
 wm: main.o
 	$(CC) -o wm main.o $(CLIBS)
@@ -15,3 +15,6 @@ coloredWindow: coloredWindow.o
 
 coloredWindow.o: coloredWindow.cpp
 	$(CC) $(CFLAGS) -o coloredWindow.o coloredWindow.cpp
+
+clean:
+	rm -rf *.o wm
