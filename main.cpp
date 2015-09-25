@@ -93,7 +93,7 @@ int main(int argc, char *argv[])
 	xcb_create_window(connection,
 					XCB_COPY_FROM_PARENT,				// depth same as parent window
 					window,								// create a window using this ID
-					root,								// setting root as parent window
+					overlayWindow,								// setting root as parent window
 					100, 100,							// (x,y) offset from top left corner
 					640, 480,							// window's width and height
 					10,									// window's border
@@ -268,7 +268,7 @@ int main(int argc, char *argv[])
 				case XCB_CONFIGURE_REQUEST:
 					{
 					xcb_configure_request_event_t *ev = (xcb_configure_request_event_t *) event;
-					// std::cout << "trying to configure a window. parent=" << ev->parent << " window=" << ev->window << std::endl;
+					std::cout << "trying to configure a window. parent=" << ev->parent << " window=" << ev->window << std::endl;
 					uint16_t mask = ev->value_mask;
 					unsigned int v[7];
 					unsigned int i = 0;
@@ -563,5 +563,6 @@ void framePixmap(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t wi
 
 	// map this new window?
 	xcb_map_window(conn, window);
+	xcb_flush(conn);
 
 }
