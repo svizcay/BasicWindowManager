@@ -1,0 +1,9 @@
+echo "before xsession" &
+# . /etc/X11/Xsession
+# echo "after xsession" &
+xsetroot -solid "dark slate gray" -display :1 &
+xclock -g 50x50-0+0 -bw 0 &
+# xload -g 50x50-50+0 -bw 0 &
+xterm -g 80x24+0+0 &
+/home/orica/Downloads/BasicWindowManager/wm
+
