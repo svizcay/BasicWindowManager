@@ -262,7 +262,6 @@ int main(int argc, char *argv[])
 					xcb_map_window(connection, ev->window);
 					xcb_flush(connection);
 					grabPixmap(connection, ev->window);
-					framePixmap(connection, screen, ev->window, overlayWindow);
 					break;
 					}
 				case XCB_MAP_NOTIFY:
@@ -279,24 +278,27 @@ int main(int argc, char *argv[])
 					// std::cout << " with dimension: " << ev->width << " x " << ev->height << std::endl;
 					//
 					std::cout << "window=" << ev->window << " with event=" << ev->event << " mapped" << std::endl;
-					if (ev->window != window) {
-						std::cout << "copying window=" << ev->window << " into white window (" << window << ")" << std::endl;
-						xcb_void_cookie_t copyAreaCookie = xcb_copy_area_checked(
-																connection,
-																window,						// src
-																ev->window,					// des
-																gc,								// gc
-																0, 0,							// src (x,y) coordinate
-																0, 0,							// des (x,y) coordinate
-																50, 50			// width x height
-						);
-						if ((error = xcb_request_check(connection, copyAreaCookie))) {
-							std::cerr << "ERROR: trying to copy from pixmap to window" << std::endl;
-							delete error;
-						}
-						xcb_flush(connection);
-
+					if (ev->window != overlayWindow) {
+						framePixmap(connection, screen, ev->window, overlayWindow);
 					}
+					// if (ev->window != window) {
+					// 	std::cout << "copying window=" << ev->window << " into white window (" << window << ")" << std::endl;
+					// 	xcb_void_cookie_t copyAreaCookie = xcb_copy_area_checked(
+					// 											connection,
+					// 											window,						// src
+					// 											ev->window,					// des
+					// 											gc,								// gc
+					// 											0, 0,							// src (x,y) coordinate
+					// 											0, 0,							// des (x,y) coordinate
+					// 											50, 50			// width x height
+					// 	);
+					// 	if ((error = xcb_request_check(connection, copyAreaCookie))) {
+					// 		std::cerr << "ERROR: trying to copy from pixmap to window" << std::endl;
+					// 		delete error;
+					// 	}
+					// 	xcb_flush(connection);
+
+					// }
 					break;
 					}
 				case XCB_CONFIGURE_REQUEST:
@@ -613,6 +615,19 @@ void framePixmap(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t wi
 	if (!bitmap) {
 		std::cerr << "ERROR: allocation memory using FreeImage" << std::endl;
 	}
+	unsigned char * ptr = FreeImage_GetBits(bitmap);
+	for (unsigned i = 0; i < frameWidth; i++) {
+		for (unsigned j = 0; j < frameHeight; j++) {
+			for (unsigned c = 0; c < 4; c++) {
+				*ptr++ = *rawdata++;
+			}
+		}
+	}
+	std::string windowIDtoStr = std::to_string(window);
+	if (!FreeImage_Save(FIF_BMP, bitmap, windowIDtoStr.c_str(), 0)) {
+		std::cerr << "ERROR: saving image with FreeImage" << std::endl;
+	}
+	FreeImage_Unload(bitmap);
 
 	// create new window with the same size and with overlay windows as parent
 	xcb_window_t frameWindow = xcb_generate_id(conn);
