@@ -17,6 +17,7 @@ void framePixmap(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t wi
 
 std::map<xcb_window_t, std::string> windows;
 std::map<xcb_window_t, xcb_pixmap_t> windowPixmapHashmap;
+// std::map<xcb_window_t, xcb_window_t> windowOverlayWindowRoot;
 
 int main(int argc, char *argv[])
 {
@@ -261,7 +262,6 @@ int main(int argc, char *argv[])
 					std::cout << "trying to map a window. parent=" << ev->parent << " window=" << ev->window << std::endl;
 					xcb_map_window(connection, ev->window);
 					xcb_flush(connection);
-					grabPixmap(connection, ev->window);
 					break;
 					}
 				case XCB_MAP_NOTIFY:
@@ -279,6 +279,7 @@ int main(int argc, char *argv[])
 					//
 					std::cout << "window=" << ev->window << " with event=" << ev->event << " mapped" << std::endl;
 					if (ev->window != overlayWindow) {
+						grabPixmap(connection, ev->window);
 						framePixmap(connection, screen, ev->window, overlayWindow);
 					}
 					// if (ev->window != window) {
