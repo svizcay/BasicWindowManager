@@ -1,6 +1,6 @@
 CC=g++
 CFLAGS=-c -Wall -O3 -std=c++11
-CLIBS=-lxcb -lxcb-composite
+CLIBS=-lxcb -lxcb-composite -lfreeimage
 
 all: wm 
 

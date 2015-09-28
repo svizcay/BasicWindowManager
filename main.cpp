@@ -4,7 +4,7 @@
 #include <xcb/xcb.h>
 #include <xcb/xcb_util.h>	// xcb_aux_asyn() (similar to xcb_flush() but also waits for the server to process the request
 #include <xcb/composite.h>
-// #include <FreeImage.h>
+#include <FreeImage.h>
 #include <vector>
 #include <string>
 #include <map>
@@ -21,7 +21,7 @@ std::map<xcb_window_t, xcb_pixmap_t> windowPixmapHashmap;
 int main(int argc, char *argv[])
 {
 	// initialize freeimage
-	// FreeImage_Initialise();
+	FreeImage_Initialise();
 
 	// connect to x server
 	int screenNumber;
@@ -52,19 +52,6 @@ int main(int argc, char *argv[])
    	xcb_generic_error_t *error;	
 	xcb_composite_query_version_cookie_t compositeQueryCookie;
 	xcb_composite_query_version_reply_t *compositeQueryReply;
-	xcb_composite_get_overlay_window_reply_t *overlayWindowReply = xcb_composite_get_overlay_window_reply(
-																		connection,
-																		xcb_composite_get_overlay_window(connection, root),
-																		NULL
-	);
-	if (!overlayWindowReply) {
-		std::cerr << "ERROR: trying to get overlay window" << std::endl;
-		return -1;
-	}
-	xcb_window_t overlayWindow = overlayWindowReply->overlay_win;
-	windows[overlayWindow] = "overlay";
-
-	std::cout << "overlay window id: " << overlayWindow << std::endl;
 	uint32_t minorVersion = 0, majorVersion = 0;
 	compositeQueryCookie = xcb_composite_query_version(connection, minorVersion, majorVersion);
 	compositeQueryReply = xcb_composite_query_version_reply(connection, compositeQueryCookie, &error);
@@ -76,9 +63,22 @@ int main(int argc, char *argv[])
 		std::cerr << "ERROR: trying to get composite extension version reply" << std::endl;
 		return -1;
 	}
+	std::cout << "Composite extension version: " << compositeQueryReply->major_version << "." << compositeQueryReply->minor_version << std::endl;
+	xcb_composite_get_overlay_window_reply_t *overlayWindowReply = xcb_composite_get_overlay_window_reply(
+																		connection,
+																		xcb_composite_get_overlay_window(connection, root),
+																		NULL
+	);
+	if (!overlayWindowReply) {
+		std::cerr << "ERROR: trying to get overlay window" << std::endl;
+		return -1;
+	}
+	xcb_window_t overlayWindow = overlayWindowReply->overlay_win;
+	windows[overlayWindow] = "overlay";
+	std::cout << "overlay window id: " << overlayWindow << std::endl;
+
 	// redirect windows to an off-screen buffer
 	xcb_composite_redirect_subwindows(connection, root, XCB_COMPOSITE_REDIRECT_MANUAL);
-	std::cout << "Composite extension version: " << compositeQueryReply->major_version << "." << compositeQueryReply->minor_version << std::endl;
 
 	// create window
 	xcb_window_t window = xcb_generate_id(connection);
@@ -88,13 +88,13 @@ int main(int argc, char *argv[])
 	uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
 	uint32_t value[3];
 	value[0] = screen->white_pixel;
-	value[1] = XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_KEY_RELEASE; // | XCB_EVENT_MASK_POINTER_MOTION;
+	value[1] = XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_KEY_RELEASE; // | XCB_EVENT_MASK_EXPOSURE |  XCB_EVENT_MASK_POINTER_MOTION;
 	// xcb_create_window will return a cookie
 	xcb_create_window(connection,
 					XCB_COPY_FROM_PARENT,				// depth same as parent window
 					window,								// create a window using this ID
 					overlayWindow,								// setting root as parent window
-					100, 100,							// (x,y) offset from top left corner
+					1000, 100,							// (x,y) offset from top left corner
 					640, 480,							// window's width and height
 					10,									// window's border
 					XCB_WINDOW_CLASS_INPUT_OUTPUT,		// (uint16t) "_class" (TODO: check this out)
@@ -265,6 +265,40 @@ int main(int argc, char *argv[])
 					framePixmap(connection, screen, ev->window, overlayWindow);
 					break;
 					}
+				case XCB_MAP_NOTIFY:
+					{
+					xcb_map_notify_event_t *ev = (xcb_map_notify_event_t *) event;
+					// std::cout << "exposing (" << static_cast<int>(event->response_type) << ") window id " << ev->window << std::endl;
+					// std::cout << "with dimension " << ev->width << " " << ev->height << std::endl;
+					// std::cout << "region to be re drawn at location " << ev->x << " " << ev->y << std::endl;
+					//
+					// std::cout << "exposing on windows ";
+					// auto it = windows.find(ev->window);
+					// if (it != windows.end()) std::cout <<  it->second;
+					// else std::cout << "unknown";
+					// std::cout << " with dimension: " << ev->width << " x " << ev->height << std::endl;
+					//
+					std::cout << "window=" << ev->window << " with event=" << ev->event << " mapped" << std::endl;
+					if (ev->window != window) {
+						std::cout << "copying window=" << ev->window << " into white window (" << window << ")" << std::endl;
+						xcb_void_cookie_t copyAreaCookie = xcb_copy_area_checked(
+																connection,
+																window,						// src
+																ev->window,					// des
+																gc,								// gc
+																0, 0,							// src (x,y) coordinate
+																0, 0,							// des (x,y) coordinate
+																50, 50			// width x height
+						);
+						if ((error = xcb_request_check(connection, copyAreaCookie))) {
+							std::cerr << "ERROR: trying to copy from pixmap to window" << std::endl;
+							delete error;
+						}
+						xcb_flush(connection);
+
+					}
+					break;
+					}
 				case XCB_CONFIGURE_REQUEST:
 					{
 					xcb_configure_request_event_t *ev = (xcb_configure_request_event_t *) event;
@@ -336,11 +370,11 @@ int main(int argc, char *argv[])
 						// 	spawn(connection, root, "/usr/bin/gnome-calculator");
 						// 	break;
 						case 54:	// 'c'
-							std::cout << "a pressed" << std::endl;
+							std::cout << "c pressed" << std::endl;
 							spawn(connection, root, "/usr/bin/gnome-calculator");
 							break;
 						case 28:	// 't'
-							std::cout << "a pressed" << std::endl;
+							std::cout << "t pressed" << std::endl;
 							spawn(connection, root, "/usr/bin/xterm");
 							break;
 					}
@@ -510,7 +544,7 @@ bool isThereOtherWM(xcb_connection_t * conn, xcb_window_t root) {
     xcb_generic_error_t *error;
     uint32_t values[1] = {
 							XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY |
-							XCB_EVENT_MASK_PROPERTY_CHANGE |XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_KEY_RELEASE
+							XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_KEY_RELEASE
 	};
 
     error = xcb_request_check(conn, xcb_change_window_attributes_checked(conn, root, XCB_CW_EVENT_MASK, values));
@@ -528,6 +562,27 @@ void grabPixmap(xcb_connection_t * conn, xcb_window_t window)
 
 void framePixmap(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t window, xcb_window_t parent)
 {
+	xcb_generic_error_t *error;
+
+	// create a dummy graphic context
+	xcb_gcontext_t gc = xcb_generate_id(conn);
+	uint32_t mask = XCB_GC_FOREGROUND | XCB_GC_BACKGROUND;	// | XCB_GC_FONT;
+	uint32_t value[3];
+	value[0] = screen->black_pixel;
+	value[1] = screen->white_pixel;
+
+	// uint32_t mask = XCB_GC_BACKGROUND;	// | XCB_GC_FONT;
+	// uint32_t value[3];
+	// value[0] = screen->white_pixel;
+	// value[1] = screen->white_pixel;
+
+	xcb_void_cookie_t cookieGC = xcb_create_gc_checked(conn, gc, window, mask, value);	// drawable=root just to get screen and depth
+	error = xcb_request_check(conn, cookieGC);
+	if (error) {
+		std::cerr << "ERROR: can't create graphic context: " << error->error_code << std::endl;
+		delete error;
+	}
+
 	// get window geometry
 	xcb_get_geometry_cookie_t geometryCookie = xcb_get_geometry(conn, window);
 	xcb_get_geometry_reply_t *geometryReply = xcb_get_geometry_reply(
@@ -542,12 +597,28 @@ void framePixmap(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t wi
 	delete geometryReply;
 	std::cout << "framePixmap: window=" << window << " (" << frameWidth << "x" << frameHeight << ") at (" << frameOffsetX << "," << frameOffsetY << ")" << std::endl;
 
+	// test pixmap sending it to a bmp file
+	xcb_get_image_cookie_t imageCookie = xcb_get_image(conn, XCB_IMAGE_FORMAT_Z_PIXMAP, windowPixmapHashmap[window], 0, 0, frameWidth, frameHeight, ~0);
+	xcb_get_image_reply_t * imageReply = xcb_get_image_reply(conn, imageCookie, &error);
+	if (error) {
+		std::cerr << "ERROR: getting the image reply from a pixmap. Error " << error->error_code  << std::endl;
+	}
+	if (!imageReply) {
+		std::cerr << "ERROR: trying to get a reply from xcb_get_image" << std::endl;
+	}
+	uint8_t *rawdata = xcb_get_image_data(imageReply);
+	size_t rawdataLength = xcb_get_image_data_length(imageReply);
+	std::cout << "raw data length: " << rawdataLength << std::endl;
+	FIBITMAP * bitmap = FreeImage_Allocate(frameWidth, frameHeight, 32);
+	if (!bitmap) {
+		std::cerr << "ERROR: allocation memory using FreeImage" << std::endl;
+	}
+
 	// create new window with the same size and with overlay windows as parent
 	xcb_window_t frameWindow = xcb_generate_id(conn);
-	uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
-	uint32_t value[3];
+	mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
 	value[0] = screen->white_pixel;
-	value[1] = XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_KEY_RELEASE; // | XCB_EVENT_MASK_POINTER_MOTION;
+	value[1] = XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_KEY_RELEASE; // | XCB_EVENT_MASK_POINTER_MOTION;
 	xcb_create_window(conn,
 					XCB_COPY_FROM_PARENT,				// depth same as parent window
 					frameWindow,						// create a window using this ID
@@ -561,8 +632,25 @@ void framePixmap(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t wi
 					value								// (const uint32_t) "*value_list" (TODO: check this out)
 	);
 
+
+	// copy pixmap to this new window
+	xcb_void_cookie_t copyAreaCookie = xcb_copy_area_checked(
+											conn,
+											windowPixmapHashmap[window],	// src
+											frameWindow,					// des
+											gc,								// gc
+											0, 0,							// src (x,y) coordinate
+											0, 0,							// des (x,y) coordinate
+											frameWidth, frameHeight			// width x height
+	);
+
+	if ((error = xcb_request_check(conn, copyAreaCookie))) {
+		std::cerr << "ERROR: trying to copy from pixmap to window" << std::endl;
+		delete error;
+	}
+
 	// map this new window?
-	xcb_map_window(conn, window);
+	xcb_map_window(conn, frameWindow);
 	xcb_flush(conn);
 
 }
