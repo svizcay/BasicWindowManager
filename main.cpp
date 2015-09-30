@@ -114,7 +114,7 @@ int main(int argc, char *argv[])
 		std::cerr << "ERROR: trying to get xfixes extension version reply" << std::endl;
 		return -1;
 	}
-	std::cout << "Xfixes extension version: " << damageQueryReply->major_version << "." << damageQueryReply->minor_version << std::endl;
+	std::cout << "Xfixes extension version: " << xfixesQueryReply->major_version << "." << xfixesQueryReply->minor_version << std::endl;
 
 	// create window
 	xcb_window_t window = xcb_generate_id(connection);
