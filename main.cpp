@@ -58,7 +58,7 @@ int main(int argc, char *argv[])
    	xcb_generic_error_t *error;	
 	xcb_composite_query_version_cookie_t compositeQueryCookie;
 	xcb_composite_query_version_reply_t *compositeQueryReply;
-	uint32_t minorVersion = 0, majorVersion = 0;
+	uint32_t minorVersion = 10, majorVersion = 10;
 	compositeQueryCookie = xcb_composite_query_version(connection, minorVersion, majorVersion);
 	compositeQueryReply = xcb_composite_query_version_reply(connection, compositeQueryCookie, &error);
 	if (error) {		
