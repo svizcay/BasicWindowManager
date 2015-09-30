@@ -4,6 +4,8 @@
 #include <xcb/xcb.h>
 #include <xcb/xcb_util.h>	// xcb_aux_asyn() (similar to xcb_flush() but also waits for the server to process the request
 #include <xcb/composite.h>
+#include <xcb/damage.h>
+#include <xcb/xfixes.h>		// makes regions available
 #include <FreeImage.h>
 #include <vector>
 #include <string>
@@ -14,10 +16,13 @@ bool isThereOtherWM(xcb_connection_t * conn, xcb_window_t root);
 void spawn(xcb_connection_t * conn, xcb_window_t root, const char * program);
 void grabPixmap(xcb_connection_t * conn, xcb_window_t window);
 void framePixmap(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t window, xcb_window_t parent);
+void takeScreenshot(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t windowInOverlay);
+void updateOverlay(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t window);
+void paint(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t windowInOverlay);
 
 std::map<xcb_window_t, std::string> windows;
 std::map<xcb_window_t, xcb_pixmap_t> windowPixmapHashmap;
-// std::map<xcb_window_t, xcb_window_t> windowOverlayWindowRoot;
+std::map<xcb_window_t, xcb_window_t> windowOverlayWindowRoot;
 
 int main(int argc, char *argv[])
 {
@@ -80,6 +85,36 @@ int main(int argc, char *argv[])
 
 	// redirect windows to an off-screen buffer
 	xcb_composite_redirect_subwindows(connection, root, XCB_COMPOSITE_REDIRECT_MANUAL);
+
+	// check for damage extension
+	xcb_damage_query_version_cookie_t damageQueryCookie;
+	xcb_damage_query_version_reply_t *damageQueryReply;
+	damageQueryCookie = xcb_damage_query_version(connection, minorVersion, majorVersion);
+	damageQueryReply = xcb_damage_query_version_reply(connection, damageQueryCookie, &error);
+	if (error) {		
+		std::cerr << "ERROR: checking damage extension version. Error " << error->error_code  << std::endl;
+		return -1;
+	}
+	if (!damageQueryReply) {
+		std::cerr << "ERROR: trying to get damage extension version reply" << std::endl;
+		return -1;
+	}
+	std::cout << "Damage extension version: " << damageQueryReply->major_version << "." << damageQueryReply->minor_version << std::endl;
+
+	// check for fixes extension
+	xcb_xfixes_query_version_cookie_t xfixesQueryCookie;
+	xcb_xfixes_query_version_reply_t *xfixesQueryReply;
+	xfixesQueryCookie = xcb_xfixes_query_version(connection, minorVersion, majorVersion);
+	xfixesQueryReply = xcb_xfixes_query_version_reply(connection, xfixesQueryCookie, &error);
+	if (error) {		
+		std::cerr << "ERROR: checking xfixes extension version. Error " << error->error_code  << std::endl;
+		return -1;
+	}
+	if (!xfixesQueryReply) {
+		std::cerr << "ERROR: trying to get xfixes extension version reply" << std::endl;
+		return -1;
+	}
+	std::cout << "Xfixes extension version: " << damageQueryReply->major_version << "." << damageQueryReply->minor_version << std::endl;
 
 	// create window
 	xcb_window_t window = xcb_generate_id(connection);
@@ -156,7 +191,7 @@ int main(int argc, char *argv[])
 	}
 
 
-	// set current cursor by setting attribute XCB_CWCURSOR with change_window_attributes
+	// set current cursor by setting attribute XCB_CW_CURSOR with change_window_attributes
 	mask = XCB_CW_CURSOR;
 	value[0] = cursor;
 	xcb_change_window_attributes(connection, root, mask, value);
@@ -225,6 +260,7 @@ int main(int argc, char *argv[])
 	// frameWindow(connection, screen, window);
 	// spawn(connection, root, "/usr/bin/gnome-calculator");
 
+	std::cout << "**************************************************************" << std::endl;
 	xcb_generic_event_t *event;
 	// xcb_generic_error_t *error;
 	bool escPressed = false;
@@ -277,8 +313,8 @@ int main(int argc, char *argv[])
 					// else std::cout << "unknown";
 					// std::cout << " with dimension: " << ev->width << " x " << ev->height << std::endl;
 					//
-					std::cout << "window=" << ev->window << " with event=" << ev->event << " mapped" << std::endl;
 					if (ev->window != overlayWindow) {
+						std::cout << "window=" << ev->window << " with event=" << ev->event << " mapped" << std::endl;
 						grabPixmap(connection, ev->window);
 						framePixmap(connection, screen, ev->window, overlayWindow);
 					}
@@ -302,6 +338,18 @@ int main(int argc, char *argv[])
 					// }
 					break;
 					}
+				case XCB_UNMAP_NOTIFY:
+					{
+					xcb_map_notify_event_t *ev = (xcb_map_notify_event_t *) event;
+					std::cout << "unmap notify window=" << ev->window << " with event=" << ev->event << " mapped" << std::endl;
+					break;
+					}
+				case XCB_VISIBILITY_NOTIFY:
+					{
+					xcb_visibility_notify_event_t *ev = (xcb_visibility_notify_event_t *) event;
+					std::cout << "visibility notify event for window=" << ev->window << " and state=" << ev->state << std::endl;
+					break;
+					}
 				case XCB_CONFIGURE_REQUEST:
 					{
 					xcb_configure_request_event_t *ev = (xcb_configure_request_event_t *) event;
@@ -318,6 +366,18 @@ int main(int argc, char *argv[])
 					if (ev->value_mask & XCB_CONFIG_WINDOW_STACK_MODE)     v[i++] = ev->stack_mode;
 					xcb_configure_window(connection, ev->window, mask, v);
 					xcb_flush(connection);
+					break;
+
+					}
+				case XCB_CONFIGURE_NOTIFY:
+					{
+					xcb_configure_notify_event_t *ev = (xcb_configure_notify_event_t *) event;
+					std::cout << "configure notify event=" << ev->event << " window=" << ev->window << std::endl;
+
+					// update pixmap
+					grabPixmap(connection, ev->window);
+					// update overlayWindow
+					updateOverlay(connection, screen, ev->window);
 					break;
 
 					}
@@ -380,11 +440,18 @@ int main(int argc, char *argv[])
 							std::cout << "t pressed" << std::endl;
 							spawn(connection, root, "/usr/bin/xterm");
 							break;
+						case 39:	// 's'
+							std::cout << "s pressed (screenshot)" << std::endl;
+							takeScreenshot(connection, screen, ev->event);
+							break;
+						case 33:	// 'p'
+							std::cout << "p pressed (paint)" << std::endl;
+							paint(connection, screen, ev->event);
 					}
+					break;
 					}
 				// default:
 				// 	std::cout << "unknown generic event with response type: " << static_cast<int>(event->response_type) <<std::endl;
-				// 	break;
 			}
 			delete event;
 		}
@@ -546,8 +613,8 @@ void spawn(xcb_connection_t * conn, xcb_window_t root, const char *program)
 bool isThereOtherWM(xcb_connection_t * conn, xcb_window_t root) {
     xcb_generic_error_t *error;
     uint32_t values[1] = {
-							XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY |
-							XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_KEY_RELEASE
+							XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY | XCB_EVENT_MASK_STRUCTURE_NOTIFY | 
+							XCB_EVENT_MASK_PROPERTY_CHANGE | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_KEY_RELEASE | XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_VISIBILITY_CHANGE
 	};
 
     error = xcb_request_check(conn, xcb_change_window_attributes_checked(conn, root, XCB_CW_EVENT_MASK, values));
@@ -558,9 +625,43 @@ bool isThereOtherWM(xcb_connection_t * conn, xcb_window_t root) {
 
 void grabPixmap(xcb_connection_t * conn, xcb_window_t window)
 {
-	xcb_pixmap_t pixmap = xcb_generate_id(conn);
-	xcb_composite_name_window_pixmap(conn, window, pixmap);
-	windowPixmapHashmap[window] = pixmap;
+	xcb_generic_error_t *error;
+	// check if window is viewable
+	xcb_get_window_attributes_cookie_t getWindowAttributesCookie = xcb_get_window_attributes(conn, window);
+	xcb_get_window_attributes_reply_t * getWindowAttributesReply = xcb_get_window_attributes_reply(conn, getWindowAttributesCookie, &error);
+	if (error) {		
+		std::cerr << "ERROR: (grabPixmap) getting window (" << window << ") attributes" << std::endl;
+	}
+	if (!getWindowAttributesReply) {
+		std::cerr << "ERROR: (grabPixmap) gettting window (" << window << ") attributes reply" << std::endl;
+	}
+
+	if (getWindowAttributesReply->map_state == XCB_MAP_STATE_VIEWABLE) {
+		// check if there is and old pixmap
+		auto iterator = windowPixmapHashmap.find(window);
+		if (iterator != windowPixmapHashmap.end()) {
+			// free old pixmap
+			xcb_void_cookie_t freePixmapCookie = xcb_free_pixmap_checked(conn, windowPixmapHashmap[window]);
+			error = xcb_request_check(conn, freePixmapCookie);
+			if (error) {
+				std::cerr << "ERROR: freeing window (" << window << ") pixmap. ERROR: " << error->error_code << std::endl;
+				delete error;
+			}
+		}
+		xcb_pixmap_t pixmap = xcb_generate_id(conn);
+		xcb_void_cookie_t nameWindowPixmapCookie = xcb_composite_name_window_pixmap_checked(conn, window, pixmap);
+		error = xcb_request_check(conn, nameWindowPixmapCookie);
+		if (error) {
+			std::cerr << "ERROR: getting pixmap from window: " << window << ". Error code: " << error->error_code << std::endl;
+			delete error;
+		}
+		xcb_flush(conn);
+		windowPixmapHashmap[window] = pixmap;
+		std::cout << "grabbing window's pixmap (" << window << ")" << std::endl;
+	} else {
+		std::cerr << "ERROR: (grabPixmap) window " << window << " is not visible" << std::endl;
+	}
+
 }
 
 void framePixmap(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t window, xcb_window_t parent)
@@ -604,12 +705,13 @@ void framePixmap(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t wi
 	xcb_get_image_cookie_t imageCookie = xcb_get_image(conn, XCB_IMAGE_FORMAT_Z_PIXMAP, windowPixmapHashmap[window], 0, 0, frameWidth, frameHeight, ~0);
 	xcb_get_image_reply_t * imageReply = xcb_get_image_reply(conn, imageCookie, &error);
 	if (error) {
-		std::cerr << "ERROR: getting the image reply from a pixmap. Error " << error->error_code  << std::endl;
+		std::cerr << "ERROR: getting the image reply from a pixmap. Error " << error->error_code << std::endl;
 	}
 	if (!imageReply) {
 		std::cerr << "ERROR: trying to get a reply from xcb_get_image" << std::endl;
 	}
 	uint8_t *rawdata = xcb_get_image_data(imageReply);
+	xcb_flush(conn);
 	size_t rawdataLength = xcb_get_image_data_length(imageReply);
 	std::cout << "raw data length: " << rawdataLength << std::endl;
 	FIBITMAP * bitmap = FreeImage_Allocate(frameWidth, frameHeight, 32);
@@ -665,8 +767,161 @@ void framePixmap(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t wi
 		delete error;
 	}
 
+	windowOverlayWindowRoot[frameWindow] = window;
+
 	// map this new window?
 	xcb_map_window(conn, frameWindow);
 	xcb_flush(conn);
 
+}
+
+void updateOverlay(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t window)
+{
+	xcb_generic_error_t *error;
+	// check if there is an overlay window associated with this window id
+	xcb_window_t overlayWindow = XCB_NONE;
+	for (auto iterator = windowOverlayWindowRoot.begin(); iterator != windowOverlayWindowRoot.end(); iterator++) {
+		if (iterator->second == window) {
+			overlayWindow = iterator->first;
+			break;
+		}
+	}
+	if (overlayWindow != XCB_NONE) {
+		// create a dummy graphic context
+		xcb_gcontext_t gc = xcb_generate_id(conn);
+		uint32_t mask = XCB_GC_FOREGROUND | XCB_GC_BACKGROUND;	// | XCB_GC_FONT;
+		uint32_t value[3];
+		value[0] = screen->black_pixel;
+		value[1] = screen->white_pixel;
+
+		xcb_void_cookie_t cookieGC = xcb_create_gc_checked(conn, gc, window, mask, value);	// drawable=root just to get screen and depth
+		error = xcb_request_check(conn, cookieGC);
+		if (error) {
+			std::cerr << "ERROR: can't create graphic context: " << error->error_code << std::endl;
+			delete error;
+		}
+
+		// get window geometry
+		xcb_get_geometry_cookie_t geometryCookie = xcb_get_geometry(conn, window);
+		xcb_get_geometry_reply_t *geometryReply = xcb_get_geometry_reply(
+															conn,
+															geometryCookie,
+															NULL);
+		
+		uint16_t frameWidth		= geometryReply->width;
+		uint16_t frameHeight	= geometryReply->height;
+		int16_t	frameOffsetX 	= geometryReply->x;
+		int16_t frameOffsetY 	= geometryReply->y;
+		delete geometryReply;
+		std::cout << "updateOverlay: window=" << window << " (" << frameWidth << "x" << frameHeight << ") at (" << frameOffsetX << "," << frameOffsetY << ")" << std::endl;
+
+		// copy pixmap to overlay window
+		xcb_void_cookie_t copyAreaCookie = xcb_copy_area_checked(
+												conn,
+												windowPixmapHashmap[window],	// src
+												overlayWindow,					// des
+												gc,								// gc
+												0, 0,							// src (x,y) coordinate
+												0, 0,							// des (x,y) coordinate
+												frameWidth, frameHeight			// width x height
+		);
+
+		if ((error = xcb_request_check(conn, copyAreaCookie))) {
+			std::cerr << "ERROR: trying to copy from pixmap to window" << std::endl;
+			delete error;
+		}
+		// xcb_unmap_window(conn, overlayWindow);
+		// xcb_flush(conn);
+		// xcb_map_window(conn, overlayWindow);
+		// xcb_flush(conn);
+	}
+
+}
+
+void takeScreenshot(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t windowInOverlay)
+{
+	xcb_window_t window = windowOverlayWindowRoot[windowInOverlay];
+	xcb_generic_error_t *error;
+
+	// get window geometry
+	xcb_get_geometry_cookie_t geometryCookie = xcb_get_geometry(conn, window);
+	xcb_get_geometry_reply_t *geometryReply = xcb_get_geometry_reply(
+														conn,
+														geometryCookie,
+														NULL);
+	
+	uint16_t frameWidth		= geometryReply->width;
+	uint16_t frameHeight	= geometryReply->height;
+	int16_t	frameOffsetX 	= geometryReply->x;
+	int16_t frameOffsetY 	= geometryReply->y;
+	delete geometryReply;
+	std::cout << "takeScreenshot: window=" << window << " (" << frameWidth << "x" << frameHeight << ") at (" << frameOffsetX << "," << frameOffsetY << ")" << std::endl;
+
+	// test pixmap sending it to a bmp file
+	xcb_get_image_cookie_t imageCookie = xcb_get_image(conn, XCB_IMAGE_FORMAT_Z_PIXMAP, windowPixmapHashmap[window], 0, 0, frameWidth, frameHeight, ~0);
+	xcb_get_image_reply_t * imageReply = xcb_get_image_reply(conn, imageCookie, &error);
+	if (error) {
+		std::cerr << "ERROR: getting the image reply from a pixmap. Error " << error->error_code << std::endl;
+	}
+	if (!imageReply) {
+		std::cerr << "ERROR: trying to get a reply from xcb_get_image" << std::endl;
+	}
+	uint8_t *rawdata = xcb_get_image_data(imageReply);
+	size_t rawdataLength = xcb_get_image_data_length(imageReply);
+	std::cout << "raw data length: " << rawdataLength << std::endl;
+	FIBITMAP * bitmap = FreeImage_Allocate(frameWidth, frameHeight, 32);
+	if (!bitmap) {
+		std::cerr << "ERROR: allocation memory using FreeImage" << std::endl;
+	}
+	unsigned char * ptr = FreeImage_GetBits(bitmap);
+	for (unsigned i = 0; i < frameWidth; i++) {
+		for (unsigned j = 0; j < frameHeight; j++) {
+			for (unsigned c = 0; c < 4; c++) {
+				*ptr++ = *rawdata++;
+			}
+		}
+	}
+	std::string windowIDtoStr = "ss" + std::to_string(window);
+	if (!FreeImage_Save(FIF_BMP, bitmap, windowIDtoStr.c_str(), 0)) {
+		std::cerr << "ERROR: saving image with FreeImage" << std::endl;
+	}
+	FreeImage_Unload(bitmap);
+}
+
+void paint(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t windowInOverlay)
+{
+	xcb_window_t window = windowOverlayWindowRoot[windowInOverlay];
+	xcb_generic_error_t *error;
+
+	// create a dummy graphic context
+	xcb_gcontext_t gc = xcb_generate_id(conn);
+	uint32_t mask = XCB_GC_FOREGROUND | XCB_GC_BACKGROUND;	// | XCB_GC_FONT;
+	uint32_t value[3];
+	value[0] = screen->black_pixel;
+	value[1] = screen->white_pixel;
+
+	xcb_void_cookie_t cookieGC = xcb_create_gc_checked(conn, gc, window, mask, value);	// drawable=root just to get screen and depth
+	error = xcb_request_check(conn, cookieGC);
+	if (error) {
+		std::cerr << "ERROR: can't create graphic context: " << error->error_code << std::endl;
+		delete error;
+	}
+
+	// get window geometry
+	xcb_get_geometry_cookie_t geometryCookie = xcb_get_geometry(conn, window);
+	xcb_get_geometry_reply_t *geometryReply = xcb_get_geometry_reply(
+														conn,
+														geometryCookie,
+														NULL);
+	
+	uint16_t frameWidth		= geometryReply->width;
+	uint16_t frameHeight	= geometryReply->height;
+	int16_t	frameOffsetX 	= geometryReply->x;
+	int16_t frameOffsetY 	= geometryReply->y;
+	delete geometryReply;
+
+	std::cout << "painting: window=" << window << " (" << frameWidth << "x" << frameHeight << ") at (" << frameOffsetX << "," << frameOffsetY << ")" << std::endl;
+	xcb_copy_area(conn, windowPixmapHashmap[window], windowInOverlay, gc, 0, 0, 0, 0, frameWidth, frameHeight);
+	xcb_flush(conn);
+	// xcb_copy_area(c, pmap, w, gc, 0,0,0,0,image->width,image->height);
 }
