@@ -19,13 +19,18 @@ void framePixmap(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t wi
 void takeScreenshot(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t windowInOverlay);
 void updateOverlay(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t window);
 void paint(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t windowInOverlay);
+void createDamage(xcb_connection_t * conn, xcb_window_t window);
+void updateWindow(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t window);
 
 std::map<xcb_window_t, std::string> windows;
 std::map<xcb_window_t, xcb_pixmap_t> windowPixmapHashmap;
 std::map<xcb_window_t, xcb_window_t> windowOverlayWindowRoot;
+std::map<xcb_window_t, xcb_damage_damage_t> windowDamageHashmap;
 
 int main(int argc, char *argv[])
 {
+   	xcb_generic_error_t *error;	
+
 	// initialize freeimage
 	FreeImage_Initialise();
 
@@ -54,8 +59,16 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
+	// prefetch extension data (in order to avoid blocking when actually calling get_extension_data)
+	xcb_prefetch_extension_data(connection, &xcb_damage_id);	// xcb_damage_id is an extern variable declared in damage.h
+	const xcb_query_extension_reply_t *extensionReply = xcb_get_extension_data(connection, &xcb_damage_id);
+	if (!extensionReply || !extensionReply->present) {
+		std::cerr << "there is no damage extension" << std::endl;
+		xcb_disconnect(connection);
+		return -1;
+	}
+
 	// check for composite extension
-   	xcb_generic_error_t *error;	
 	xcb_composite_query_version_cookie_t compositeQueryCookie;
 	xcb_composite_query_version_reply_t *compositeQueryReply;
 	uint32_t minorVersion = 10, majorVersion = 10;
@@ -100,6 +113,10 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 	std::cout << "Damage extension version: " << damageQueryReply->major_version << "." << damageQueryReply->minor_version << std::endl;
+	uint8_t damageResponse = extensionReply->first_event;
+	std::cout << "Damage first event (int): " << (int)extensionReply->first_event << std::endl;
+	std::cout << "Damage first event (static_cast): " << static_cast<int>(extensionReply->first_event) << std::endl;
+	std::cout << "Damage first event (+): " << +extensionReply->first_event << std::endl;
 
 	// check for fixes extension
 	xcb_xfixes_query_version_cookie_t xfixesQueryCookie;
@@ -115,6 +132,17 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 	std::cout << "Xfixes extension version: " << xfixesQueryReply->major_version << "." << xfixesQueryReply->minor_version << std::endl;
+
+	// TODO: DEBUG: add damage to root window
+	xcb_damage_damage_t damage = xcb_generate_id(connection);
+	xcb_void_cookie_t damageCreateCookie = xcb_damage_create_checked(connection, damage, root, XCB_DAMAGE_REPORT_LEVEL_RAW_RECTANGLES);
+
+	if ((error = xcb_request_check(connection, damageCreateCookie))) {
+		std::cerr << "ERROR: creating a new damage for root window" << std::endl;
+		delete error;
+	}
+	windowDamageHashmap[root] = damage;
+	std::cout << "(CREATE DAMAGE) new damage=" << damage << " created for root window" << std::endl;
 
 	// create window
 	xcb_window_t window = xcb_generate_id(connection);
@@ -268,191 +296,360 @@ int main(int argc, char *argv[])
 		if ( (event = xcb_wait_for_event(connection)) ) {
 			// event is NULL if there is no event. if error occurs, erros will have an error status
 			// std::cout << "before switch..." << std::endl;
-			switch(event->response_type & ~0x80) {
-				case XCB_EXPOSE:
-					{
-					xcb_expose_event_t *ev = (xcb_expose_event_t *) event;
-					// std::cout << "exposing (" << static_cast<int>(event->response_type) << ") window id " << ev->window << std::endl;
-					// std::cout << "with dimension " << ev->width << " " << ev->height << std::endl;
-					// std::cout << "region to be re drawn at location " << ev->x << " " << ev->y << std::endl;
-					std::cout << "exposing on windows ";
-					auto it = windows.find(ev->window);
-					if (it != windows.end()) std::cout <<  it->second;
-					else std::cout << "unknown";
-					std::cout << " with dimension: " << ev->width << " x " << ev->height << std::endl;
-					break;
-					}
-				case XCB_MAP_REQUEST:
-					{
-					xcb_map_request_event_t *ev = (xcb_map_request_event_t *) event;
-					// std::cout << "exposing (" << static_cast<int>(event->response_type) << ") window id " << ev->window << std::endl;
-					// std::cout << "with dimension " << ev->width << " " << ev->height << std::endl;
-					// std::cout << "region to be re drawn at location " << ev->x << " " << ev->y << std::endl;
-					//
-					// std::cout << "exposing on windows ";
-					// auto it = windows.find(ev->window);
-					// if (it != windows.end()) std::cout <<  it->second;
-					// else std::cout << "unknown";
-					// std::cout << " with dimension: " << ev->width << " x " << ev->height << std::endl;
-					//
-					std::cout << "trying to map a window. parent=" << ev->parent << " window=" << ev->window << std::endl;
-					xcb_map_window(connection, ev->window);
-					xcb_flush(connection);
-					break;
-					}
-				case XCB_MAP_NOTIFY:
-					{
-					xcb_map_notify_event_t *ev = (xcb_map_notify_event_t *) event;
-					// std::cout << "exposing (" << static_cast<int>(event->response_type) << ") window id " << ev->window << std::endl;
-					// std::cout << "with dimension " << ev->width << " " << ev->height << std::endl;
-					// std::cout << "region to be re drawn at location " << ev->x << " " << ev->y << std::endl;
-					//
-					// std::cout << "exposing on windows ";
-					// auto it = windows.find(ev->window);
-					// if (it != windows.end()) std::cout <<  it->second;
-					// else std::cout << "unknown";
-					// std::cout << " with dimension: " << ev->width << " x " << ev->height << std::endl;
-					//
-					if (ev->window != overlayWindow) {
-						std::cout << "window=" << ev->window << " with event=" << ev->event << " mapped" << std::endl;
-						grabPixmap(connection, ev->window);
-						framePixmap(connection, screen, ev->window, overlayWindow);
-					}
-					// if (ev->window != window) {
-					// 	std::cout << "copying window=" << ev->window << " into white window (" << window << ")" << std::endl;
-					// 	xcb_void_cookie_t copyAreaCookie = xcb_copy_area_checked(
-					// 											connection,
-					// 											window,						// src
-					// 											ev->window,					// des
-					// 											gc,								// gc
-					// 											0, 0,							// src (x,y) coordinate
-					// 											0, 0,							// des (x,y) coordinate
-					// 											50, 50			// width x height
-					// 	);
-					// 	if ((error = xcb_request_check(connection, copyAreaCookie))) {
-					// 		std::cerr << "ERROR: trying to copy from pixmap to window" << std::endl;
-					// 		delete error;
-					// 	}
-					// 	xcb_flush(connection);
-
-					// }
-					break;
-					}
-				case XCB_UNMAP_NOTIFY:
-					{
-					xcb_map_notify_event_t *ev = (xcb_map_notify_event_t *) event;
-					std::cout << "unmap notify window=" << ev->window << " with event=" << ev->event << " mapped" << std::endl;
-					break;
-					}
-				case XCB_VISIBILITY_NOTIFY:
-					{
-					xcb_visibility_notify_event_t *ev = (xcb_visibility_notify_event_t *) event;
-					std::cout << "visibility notify event for window=" << ev->window << " and state=" << ev->state << std::endl;
-					break;
-					}
-				case XCB_CONFIGURE_REQUEST:
-					{
-					xcb_configure_request_event_t *ev = (xcb_configure_request_event_t *) event;
-					std::cout << "trying to configure a window. parent=" << ev->parent << " window=" << ev->window << std::endl;
-					uint16_t mask = ev->value_mask;
-					unsigned int v[7];
-					unsigned int i = 0;
-					if (ev->value_mask & XCB_CONFIG_WINDOW_X)              v[i++] =	ev->x;
-					if (ev->value_mask & XCB_CONFIG_WINDOW_Y)              v[i++] =	ev->y;
-					if (ev->value_mask & XCB_CONFIG_WINDOW_WIDTH)          v[i++] =	ev->width;
-					if (ev->value_mask & XCB_CONFIG_WINDOW_HEIGHT)         v[i++] = ev->height;
-					if (ev->value_mask & XCB_CONFIG_WINDOW_BORDER_WIDTH)   v[i++] = ev->border_width;
-					if (ev->value_mask & XCB_CONFIG_WINDOW_SIBLING)        v[i++] = ev->sibling;
-					if (ev->value_mask & XCB_CONFIG_WINDOW_STACK_MODE)     v[i++] = ev->stack_mode;
-					xcb_configure_window(connection, ev->window, mask, v);
-					xcb_flush(connection);
-					break;
-
-					}
-				case XCB_CONFIGURE_NOTIFY:
-					{
-					xcb_configure_notify_event_t *ev = (xcb_configure_notify_event_t *) event;
-					std::cout << "configure notify event=" << ev->event << " window=" << ev->window << std::endl;
-
-					// update pixmap
+			uint8_t response = event->response_type & ~0x80;
+			if (response == XCB_EXPOSE) {
+				xcb_expose_event_t *ev = (xcb_expose_event_t *) event;
+				// std::cout << "exposing (" << static_cast<int>(event->response_type) << ") window id " << ev->window << std::endl;
+				// std::cout << "with dimension " << ev->width << " " << ev->height << std::endl;
+				// std::cout << "region to be re drawn at location " << ev->x << " " << ev->y << std::endl;
+				std::cout << "exposing on windows ";
+				auto it = windows.find(ev->window);
+				if (it != windows.end()) std::cout <<  it->second;
+				else std::cout << "unknown";
+				std::cout << " with dimension: " << ev->width << " x " << ev->height << std::endl;
+			} else if (response == XCB_MAP_REQUEST) {
+				xcb_map_request_event_t *ev = (xcb_map_request_event_t *) event;
+				// std::cout << "exposing (" << static_cast<int>(event->response_type) << ") window id " << ev->window << std::endl;
+				// std::cout << "with dimension " << ev->width << " " << ev->height << std::endl;
+				// std::cout << "region to be re drawn at location " << ev->x << " " << ev->y << std::endl;
+				//
+				// std::cout << "exposing on windows ";
+				// auto it = windows.find(ev->window);
+				// if (it != windows.end()) std::cout <<  it->second;
+				// else std::cout << "unknown";
+				// std::cout << " with dimension: " << ev->width << " x " << ev->height << std::endl;
+				//
+				std::cout << "trying to map a window. parent=" << ev->parent << " window=" << ev->window << std::endl;
+				xcb_map_window(connection, ev->window);
+				xcb_flush(connection);
+			} else if (response == XCB_MAP_NOTIFY) {
+				xcb_map_notify_event_t *ev = (xcb_map_notify_event_t *) event;
+				// std::cout << "exposing (" << static_cast<int>(event->response_type) << ") window id " << ev->window << std::endl;
+				// std::cout << "with dimension " << ev->width << " " << ev->height << std::endl;
+				// std::cout << "region to be re drawn at location " << ev->x << " " << ev->y << std::endl;
+				//
+				// std::cout << "exposing on windows ";
+				// auto it = windows.find(ev->window);
+				// if (it != windows.end()) std::cout <<  it->second;
+				// else std::cout << "unknown";
+				// std::cout << " with dimension: " << ev->width << " x " << ev->height << std::endl;
+				//
+				if (ev->window != overlayWindow) {
+					std::cout << "window=" << ev->window << " with event=" << ev->event << " mapped" << std::endl;
 					grabPixmap(connection, ev->window);
-					// update overlayWindow
-					updateOverlay(connection, screen, ev->window);
-					break;
+					createDamage(connection, ev->window);
+					framePixmap(connection, screen, ev->window, overlayWindow);
+				}
+				// if (ev->window != window) {
+				// 	std::cout << "copying window=" << ev->window << " into white window (" << window << ")" << std::endl;
+				// 	xcb_void_cookie_t copyAreaCookie = xcb_copy_area_checked(
+				// 											connection,
+				// 											window,						// src
+				// 											ev->window,					// des
+				// 											gc,								// gc
+				// 											0, 0,							// src (x,y) coordinate
+				// 											0, 0,							// des (x,y) coordinate
+				// 											50, 50			// width x height
+				// 	);
+				// 	if ((error = xcb_request_check(connection, copyAreaCookie))) {
+				// 		std::cerr << "ERROR: trying to copy from pixmap to window" << std::endl;
+				// 		delete error;
+				// 	}
+				// 	xcb_flush(connection);
 
-					}
-				case XCB_BUTTON_PRESS:
-					{
-					xcb_button_press_event_t *ev = (xcb_button_press_event_t *) event;
-					// std::cout << "button pressed (" << static_cast<int>(event->response_type) << ")" << std::endl;
-					// std::cout << "time: " << ev->time << std::endl;
-					// std::cout << "position: " << ev->event_x << " " << ev->event_y << std::endl;
-					// std::cout << "state: " << ev->state << std::endl;
-					std::cout << "button pressed on windows (" << ev->event << ") ";
-					auto it = windows.find(ev->event);
-					if (it != windows.end()) std::cout << it->second;
-					else std::cout << "unknown";
-					std::cout << " with position: " << ev->event_x << " , " << ev->event_y << std::endl;
-					break;
-					}
-				case XCB_BUTTON_RELEASE:
-					{
-					xcb_button_release_event_t *ev = (xcb_button_release_event_t *) event;
-					// std::cout << "button released (" << static_cast<int>(event->response_type) << ")" << std::endl;
-					// std::cout << "time: " << ev->time << std::endl;
-					// std::cout << "position: " << ev->event_x << " " << ev->event_y << std::endl;
-					// std::cout << "state: " << ev->state << std::endl;
-					// spawn(connection, root, "/usr/bin/gnome-calculator");
-					std::cout << "button released on windows (" << ev->event << ") ";
-					auto it = windows.find(ev->event);
-					if (it != windows.end()) std::cout << it->second;
-					else std::cout << "unknown";
-					std::cout << " with position: " << ev->event_x << " , " << ev->event_y << std::endl;
-					break;
-					}
-				case XCB_KEY_RELEASE:
-					{
-					xcb_key_release_event_t *ev = (xcb_key_release_event_t *) event;
-					// std::cout << "key released (" << static_cast<int>(event->response_type) << ")" << std::endl;
-					// std::cout << "root " << ev->root << std::endl;
-					// std::cout << "window " << ev->event << std::endl;
-					// std::cout << "ev->detail (keycode): " << static_cast<int>(ev->detail) << std::endl;
-					std::cout << "key released (keycode=" << static_cast<int>(ev->detail) << ")";
-					std::cout << " on windows (" << ev->event << ") ";
-					auto it = windows.find(ev->event);
-					if (it != windows.end()) std::cout << it->second;
-					else std::cout << "unknown";
-					std::cout << std::endl;
-					switch (ev->detail) {
-						case 9:		// 'ESC'
-							std::cout << "see you" << std::endl;
-							escPressed = true;
-							break;
-						// case 38:	// 'a'
-						// 	std::cout << "a pressed" << std::endl;
-						// 	spawn(connection, root, "/usr/bin/gnome-calculator");
-						// 	break;
-						case 54:	// 'c'
-							std::cout << "c pressed" << std::endl;
-							spawn(connection, root, "/usr/bin/gnome-calculator");
-							break;
-						case 28:	// 't'
-							std::cout << "t pressed" << std::endl;
-							spawn(connection, root, "/usr/bin/xterm");
-							break;
-						case 39:	// 's'
-							std::cout << "s pressed (screenshot)" << std::endl;
-							takeScreenshot(connection, screen, ev->event);
-							break;
-						case 33:	// 'p'
-							std::cout << "p pressed (paint)" << std::endl;
-							paint(connection, screen, ev->event);
-					}
-					break;
-					}
-				// default:
-				// 	std::cout << "unknown generic event with response type: " << static_cast<int>(event->response_type) <<std::endl;
+				// }
+			} else if (response == XCB_UNMAP_NOTIFY) {
+				xcb_map_notify_event_t *ev = (xcb_map_notify_event_t *) event;
+				std::cout << "unmap notify window=" << ev->window << " with event=" << ev->event << " mapped" << std::endl;
+			} else if (response == XCB_VISIBILITY_NOTIFY) {
+				xcb_visibility_notify_event_t *ev = (xcb_visibility_notify_event_t *) event;
+				std::cout << "visibility notify event for window=" << ev->window << " and state=" << ev->state << std::endl;
+			} else if (response == XCB_CONFIGURE_REQUEST) {
+				xcb_configure_request_event_t *ev = (xcb_configure_request_event_t *) event;
+				std::cout << "trying to configure a window. parent=" << ev->parent << " window=" << ev->window << std::endl;
+				uint16_t mask = ev->value_mask;
+				unsigned int v[7];
+				unsigned int i = 0;
+				if (ev->value_mask & XCB_CONFIG_WINDOW_X)              v[i++] =	ev->x;
+				if (ev->value_mask & XCB_CONFIG_WINDOW_Y)              v[i++] =	ev->y;
+				if (ev->value_mask & XCB_CONFIG_WINDOW_WIDTH)          v[i++] =	ev->width;
+				if (ev->value_mask & XCB_CONFIG_WINDOW_HEIGHT)         v[i++] = ev->height;
+				if (ev->value_mask & XCB_CONFIG_WINDOW_BORDER_WIDTH)   v[i++] = ev->border_width;
+				if (ev->value_mask & XCB_CONFIG_WINDOW_SIBLING)        v[i++] = ev->sibling;
+				if (ev->value_mask & XCB_CONFIG_WINDOW_STACK_MODE)     v[i++] = ev->stack_mode;
+				xcb_configure_window(connection, ev->window, mask, v);
+				xcb_flush(connection);
+			} else if (response == XCB_CONFIGURE_NOTIFY) {
+				xcb_configure_notify_event_t *ev = (xcb_configure_notify_event_t *) event;
+				std::cout << "configure notify event=" << ev->event << " window=" << ev->window << std::endl;
+
+				// update pixmap
+				grabPixmap(connection, ev->window);
+				// update overlayWindow
+				updateOverlay(connection, screen, ev->window);
+			} else if (response == XCB_BUTTON_PRESS) {
+				xcb_button_press_event_t *ev = (xcb_button_press_event_t *) event;
+				// std::cout << "button pressed (" << static_cast<int>(event->response_type) << ")" << std::endl;
+				// std::cout << "time: " << ev->time << std::endl;
+				// std::cout << "position: " << ev->event_x << " " << ev->event_y << std::endl;
+				// std::cout << "state: " << ev->state << std::endl;
+				std::cout << "button pressed on windows (" << ev->event << ") ";
+				auto it = windows.find(ev->event);
+				if (it != windows.end()) std::cout << it->second;
+				else std::cout << "unknown";
+				std::cout << " with position: " << ev->event_x << " , " << ev->event_y << std::endl;
+
+			} else if (response == XCB_BUTTON_RELEASE) {
+				xcb_button_release_event_t *ev = (xcb_button_release_event_t *) event;
+				// std::cout << "button released (" << static_cast<int>(event->response_type) << ")" << std::endl;
+				// std::cout << "time: " << ev->time << std::endl;
+				// std::cout << "position: " << ev->event_x << " " << ev->event_y << std::endl;
+				// std::cout << "state: " << ev->state << std::endl;
+				// spawn(connection, root, "/usr/bin/gnome-calculator");
+				std::cout << "button released on windows (" << ev->event << ") ";
+				auto it = windows.find(ev->event);
+				if (it != windows.end()) std::cout << it->second;
+				else std::cout << "unknown";
+				std::cout << " with position: " << ev->event_x << " , " << ev->event_y << std::endl;
+			} else if (response == XCB_KEY_RELEASE) {
+				xcb_key_release_event_t *ev = (xcb_key_release_event_t *) event;
+				// std::cout << "key released (" << static_cast<int>(event->response_type) << ")" << std::endl;
+				// std::cout << "root " << ev->root << std::endl;
+				// std::cout << "window " << ev->event << std::endl;
+				// std::cout << "ev->detail (keycode): " << static_cast<int>(ev->detail) << std::endl;
+				std::cout << "key released (keycode=" << static_cast<int>(ev->detail) << ")";
+				std::cout << " on windows (" << ev->event << ") ";
+				auto it = windows.find(ev->event);
+				if (it != windows.end()) std::cout << it->second;
+				else std::cout << "unknown";
+				std::cout << std::endl;
+				switch (ev->detail) {
+					case 9:		// 'ESC'
+						std::cout << "see you" << std::endl;
+						escPressed = true;
+						break;
+					// case 38:	// 'a'
+					// 	std::cout << "a pressed" << std::endl;
+					// 	spawn(connection, root, "/usr/bin/gnome-calculator");
+					// 	break;
+					case 54:	// 'c'
+						std::cout << "c pressed" << std::endl;
+						spawn(connection, root, "/usr/bin/gnome-calculator");
+						break;
+					case 28:	// 't'
+						std::cout << "t pressed" << std::endl;
+						spawn(connection, root, "/usr/bin/xterm");
+						break;
+					case 39:	// 's'
+						std::cout << "s pressed (screenshot)" << std::endl;
+						takeScreenshot(connection, screen, ev->event);
+						break;
+					case 33:	// 'p'
+						std::cout << "p pressed (paint)" << std::endl;
+						paint(connection, screen, ev->event);
+				} // end switch key
+			} else if (response == damageResponse + XCB_DAMAGE_NOTIFY) {
+				xcb_damage_notify_event_t *ev = (xcb_damage_notify_event_t *) event;
+				updateWindow(connection, screen, ev->drawable);
+				// std::cout << "damage notify on windows " << ev->drawable << std::endl;
+			} else {
+				// std::cout << "unknown event (int): " << (int)response << std::endl;
+				// std::cout << "unknown event (static_cast): " << static_cast<int>(response) << std::endl;
+				// std::cout << "unknown event (+): " << +response << std::endl;
 			}
+
+			// switch(event->response_type & ~0x80) {
+			// 	case (XCB_DAMAGE_NOTIFY):
+			// 		{
+			// 		xcb_damage_notify_event_t *ev = (xcb_damage_notify_event_t *) event;
+			// 		std::cout << "damage notify on windows " << ev->drawable << std::endl;
+			// 		break;
+			// 		}
+			// 	case XCB_EXPOSE:
+			// 		{
+			// 		xcb_expose_event_t *ev = (xcb_expose_event_t *) event;
+			// 		// std::cout << "exposing (" << static_cast<int>(event->response_type) << ") window id " << ev->window << std::endl;
+			// 		// std::cout << "with dimension " << ev->width << " " << ev->height << std::endl;
+			// 		// std::cout << "region to be re drawn at location " << ev->x << " " << ev->y << std::endl;
+			// 		std::cout << "exposing on windows ";
+			// 		auto it = windows.find(ev->window);
+			// 		if (it != windows.end()) std::cout <<  it->second;
+			// 		else std::cout << "unknown";
+			// 		std::cout << " with dimension: " << ev->width << " x " << ev->height << std::endl;
+			// 		break;
+			// 		}
+			// 	case XCB_MAP_REQUEST:
+			// 		{
+			// 		xcb_map_request_event_t *ev = (xcb_map_request_event_t *) event;
+			// 		// std::cout << "exposing (" << static_cast<int>(event->response_type) << ") window id " << ev->window << std::endl;
+			// 		// std::cout << "with dimension " << ev->width << " " << ev->height << std::endl;
+			// 		// std::cout << "region to be re drawn at location " << ev->x << " " << ev->y << std::endl;
+			// 		//
+			// 		// std::cout << "exposing on windows ";
+			// 		// auto it = windows.find(ev->window);
+			// 		// if (it != windows.end()) std::cout <<  it->second;
+			// 		// else std::cout << "unknown";
+			// 		// std::cout << " with dimension: " << ev->width << " x " << ev->height << std::endl;
+			// 		//
+			// 		std::cout << "trying to map a window. parent=" << ev->parent << " window=" << ev->window << std::endl;
+			// 		xcb_map_window(connection, ev->window);
+			// 		xcb_flush(connection);
+			// 		break;
+			// 		}
+			// 	case XCB_MAP_NOTIFY:
+			// 		{
+			// 		xcb_map_notify_event_t *ev = (xcb_map_notify_event_t *) event;
+			// 		// std::cout << "exposing (" << static_cast<int>(event->response_type) << ") window id " << ev->window << std::endl;
+			// 		// std::cout << "with dimension " << ev->width << " " << ev->height << std::endl;
+			// 		// std::cout << "region to be re drawn at location " << ev->x << " " << ev->y << std::endl;
+			// 		//
+			// 		// std::cout << "exposing on windows ";
+			// 		// auto it = windows.find(ev->window);
+			// 		// if (it != windows.end()) std::cout <<  it->second;
+			// 		// else std::cout << "unknown";
+			// 		// std::cout << " with dimension: " << ev->width << " x " << ev->height << std::endl;
+			// 		//
+			// 		if (ev->window != overlayWindow) {
+			// 			std::cout << "window=" << ev->window << " with event=" << ev->event << " mapped" << std::endl;
+			// 			grabPixmap(connection, ev->window);
+			// 			createDamage(connection, ev->window);
+			// 			framePixmap(connection, screen, ev->window, overlayWindow);
+			// 		}
+			// 		// if (ev->window != window) {
+			// 		// 	std::cout << "copying window=" << ev->window << " into white window (" << window << ")" << std::endl;
+			// 		// 	xcb_void_cookie_t copyAreaCookie = xcb_copy_area_checked(
+			// 		// 											connection,
+			// 		// 											window,						// src
+			// 		// 											ev->window,					// des
+			// 		// 											gc,								// gc
+			// 		// 											0, 0,							// src (x,y) coordinate
+			// 		// 											0, 0,							// des (x,y) coordinate
+			// 		// 											50, 50			// width x height
+			// 		// 	);
+			// 		// 	if ((error = xcb_request_check(connection, copyAreaCookie))) {
+			// 		// 		std::cerr << "ERROR: trying to copy from pixmap to window" << std::endl;
+			// 		// 		delete error;
+			// 		// 	}
+			// 		// 	xcb_flush(connection);
+
+			// 		// }
+			// 		break;
+			// 		}
+			// 	case XCB_UNMAP_NOTIFY:
+			// 		{
+			// 		xcb_map_notify_event_t *ev = (xcb_map_notify_event_t *) event;
+			// 		std::cout << "unmap notify window=" << ev->window << " with event=" << ev->event << " mapped" << std::endl;
+			// 		break;
+			// 		}
+			// 	case XCB_VISIBILITY_NOTIFY:
+			// 		{
+			// 		xcb_visibility_notify_event_t *ev = (xcb_visibility_notify_event_t *) event;
+			// 		std::cout << "visibility notify event for window=" << ev->window << " and state=" << ev->state << std::endl;
+			// 		break;
+			// 		}
+			// 	case XCB_CONFIGURE_REQUEST:
+			// 		{
+			// 		xcb_configure_request_event_t *ev = (xcb_configure_request_event_t *) event;
+			// 		std::cout << "trying to configure a window. parent=" << ev->parent << " window=" << ev->window << std::endl;
+			// 		uint16_t mask = ev->value_mask;
+			// 		unsigned int v[7];
+			// 		unsigned int i = 0;
+			// 		if (ev->value_mask & XCB_CONFIG_WINDOW_X)              v[i++] =	ev->x;
+			// 		if (ev->value_mask & XCB_CONFIG_WINDOW_Y)              v[i++] =	ev->y;
+			// 		if (ev->value_mask & XCB_CONFIG_WINDOW_WIDTH)          v[i++] =	ev->width;
+			// 		if (ev->value_mask & XCB_CONFIG_WINDOW_HEIGHT)         v[i++] = ev->height;
+			// 		if (ev->value_mask & XCB_CONFIG_WINDOW_BORDER_WIDTH)   v[i++] = ev->border_width;
+			// 		if (ev->value_mask & XCB_CONFIG_WINDOW_SIBLING)        v[i++] = ev->sibling;
+			// 		if (ev->value_mask & XCB_CONFIG_WINDOW_STACK_MODE)     v[i++] = ev->stack_mode;
+			// 		xcb_configure_window(connection, ev->window, mask, v);
+			// 		xcb_flush(connection);
+			// 		break;
+
+			// 		}
+			// 	case XCB_CONFIGURE_NOTIFY:
+			// 		{
+			// 		xcb_configure_notify_event_t *ev = (xcb_configure_notify_event_t *) event;
+			// 		std::cout << "configure notify event=" << ev->event << " window=" << ev->window << std::endl;
+
+			// 		// update pixmap
+			// 		grabPixmap(connection, ev->window);
+			// 		// update overlayWindow
+			// 		updateOverlay(connection, screen, ev->window);
+			// 		break;
+
+			// 		}
+			// 	case XCB_BUTTON_PRESS:
+			// 		{
+			// 		xcb_button_press_event_t *ev = (xcb_button_press_event_t *) event;
+			// 		// std::cout << "button pressed (" << static_cast<int>(event->response_type) << ")" << std::endl;
+			// 		// std::cout << "time: " << ev->time << std::endl;
+			// 		// std::cout << "position: " << ev->event_x << " " << ev->event_y << std::endl;
+			// 		// std::cout << "state: " << ev->state << std::endl;
+			// 		std::cout << "button pressed on windows (" << ev->event << ") ";
+			// 		auto it = windows.find(ev->event);
+			// 		if (it != windows.end()) std::cout << it->second;
+			// 		else std::cout << "unknown";
+			// 		std::cout << " with position: " << ev->event_x << " , " << ev->event_y << std::endl;
+			// 		break;
+			// 		}
+			// 	case XCB_BUTTON_RELEASE:
+			// 		{
+			// 		xcb_button_release_event_t *ev = (xcb_button_release_event_t *) event;
+			// 		// std::cout << "button released (" << static_cast<int>(event->response_type) << ")" << std::endl;
+			// 		// std::cout << "time: " << ev->time << std::endl;
+			// 		// std::cout << "position: " << ev->event_x << " " << ev->event_y << std::endl;
+			// 		// std::cout << "state: " << ev->state << std::endl;
+			// 		// spawn(connection, root, "/usr/bin/gnome-calculator");
+			// 		std::cout << "button released on windows (" << ev->event << ") ";
+			// 		auto it = windows.find(ev->event);
+			// 		if (it != windows.end()) std::cout << it->second;
+			// 		else std::cout << "unknown";
+			// 		std::cout << " with position: " << ev->event_x << " , " << ev->event_y << std::endl;
+			// 		break;
+			// 		}
+			// 	case XCB_KEY_RELEASE:
+			// 		{
+			// 		xcb_key_release_event_t *ev = (xcb_key_release_event_t *) event;
+			// 		// std::cout << "key released (" << static_cast<int>(event->response_type) << ")" << std::endl;
+			// 		// std::cout << "root " << ev->root << std::endl;
+			// 		// std::cout << "window " << ev->event << std::endl;
+			// 		// std::cout << "ev->detail (keycode): " << static_cast<int>(ev->detail) << std::endl;
+			// 		std::cout << "key released (keycode=" << static_cast<int>(ev->detail) << ")";
+			// 		std::cout << " on windows (" << ev->event << ") ";
+			// 		auto it = windows.find(ev->event);
+			// 		if (it != windows.end()) std::cout << it->second;
+			// 		else std::cout << "unknown";
+			// 		std::cout << std::endl;
+			// 		switch (ev->detail) {
+			// 			case 9:		// 'ESC'
+			// 				std::cout << "see you" << std::endl;
+			// 				escPressed = true;
+			// 				break;
+			// 			// case 38:	// 'a'
+			// 			// 	std::cout << "a pressed" << std::endl;
+			// 			// 	spawn(connection, root, "/usr/bin/gnome-calculator");
+			// 			// 	break;
+			// 			case 54:	// 'c'
+			// 				std::cout << "c pressed" << std::endl;
+			// 				spawn(connection, root, "/usr/bin/gnome-calculator");
+			// 				break;
+			// 			case 28:	// 't'
+			// 				std::cout << "t pressed" << std::endl;
+			// 				spawn(connection, root, "/usr/bin/xterm");
+			// 				break;
+			// 			case 39:	// 's'
+			// 				std::cout << "s pressed (screenshot)" << std::endl;
+			// 				takeScreenshot(connection, screen, ev->event);
+			// 				break;
+			// 			case 33:	// 'p'
+			// 				std::cout << "p pressed (paint)" << std::endl;
+			// 				paint(connection, screen, ev->event);
+			// 		}
+			// 		break;
+			// 		}
+			// 	// default:
+			// 	// 	std::cout << "unknown generic event with response type: " << static_cast<int>(event->response_type) <<std::endl;
+			// }
 			delete event;
 		}
 
@@ -700,6 +897,7 @@ void framePixmap(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t wi
 	int16_t frameOffsetY 	= geometryReply->y;
 	delete geometryReply;
 	std::cout << "framePixmap: window=" << window << " (" << frameWidth << "x" << frameHeight << ") at (" << frameOffsetX << "," << frameOffsetY << ")" << std::endl;
+	std::cout << "window depth: " << +(geometryReply->depth) << std::endl;
 
 	// test pixmap sending it to a bmp file
 	xcb_get_image_cookie_t imageCookie = xcb_get_image(conn, XCB_IMAGE_FORMAT_Z_PIXMAP, windowPixmapHashmap[window], 0, 0, frameWidth, frameHeight, ~0);
@@ -924,4 +1122,68 @@ void paint(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t windowIn
 	xcb_copy_area(conn, windowPixmapHashmap[window], windowInOverlay, gc, 0, 0, 0, 0, frameWidth, frameHeight);
 	xcb_flush(conn);
 	// xcb_copy_area(c, pmap, w, gc, 0,0,0,0,image->width,image->height);
+}
+
+void updateWindow(xcb_connection_t * conn, xcb_screen_t * screen, xcb_window_t window)
+{
+	xcb_generic_error_t *error;
+
+	// create a dummy graphic context
+	xcb_gcontext_t gc = xcb_generate_id(conn);
+	uint32_t mask = XCB_GC_FOREGROUND | XCB_GC_BACKGROUND;	// | XCB_GC_FONT;
+	uint32_t value[3];
+	value[0] = screen->black_pixel;
+	value[1] = screen->white_pixel;
+
+	xcb_void_cookie_t cookieGC = xcb_create_gc_checked(conn, gc, window, mask, value);	// drawable=root just to get screen and depth
+	error = xcb_request_check(conn, cookieGC);
+	if (error) {
+		std::cerr << "ERROR: can't create graphic context: " << error->error_code << std::endl;
+		delete error;
+	}
+
+	// get window geometry
+	xcb_get_geometry_cookie_t geometryCookie = xcb_get_geometry(conn, window);
+	xcb_get_geometry_reply_t *geometryReply = xcb_get_geometry_reply(
+														conn,
+														geometryCookie,
+														NULL);
+	
+	uint16_t frameWidth		= geometryReply->width;
+	uint16_t frameHeight	= geometryReply->height;
+	// int16_t	frameOffsetX 	= geometryReply->x;
+	// int16_t frameOffsetY 	= geometryReply->y;
+	delete geometryReply;
+
+	xcb_window_t overlayWindow = XCB_NONE;
+	for (auto iterator = windowOverlayWindowRoot.begin(); iterator != windowOverlayWindowRoot.end(); iterator++) {
+		if (iterator->second == window) {
+			overlayWindow = iterator->first;
+			break;
+		}
+	}
+
+	if (overlayWindow != XCB_NONE) {
+		xcb_copy_area(conn, windowPixmapHashmap[window], overlayWindow, gc, 0, 0, 0, 0, frameWidth, frameHeight);
+		xcb_flush(conn);
+	} else {
+		std::cerr << "ERROR: (updateWindow) couldn't find overlayWindow for window=" << window << std::endl;
+	}
+	// std::cout << "painting: window=" << window << " (" << frameWidth << "x" << frameHeight << ") at (" << frameOffsetX << "," << frameOffsetY << ")" << std::endl;
+	// xcb_copy_area(c, pmap, w, gc, 0,0,0,0,image->width,image->height);
+}
+
+void createDamage(xcb_connection_t * conn, xcb_window_t window)
+{
+   	xcb_generic_error_t *error;	
+	xcb_damage_damage_t damage = xcb_generate_id(conn);
+	xcb_void_cookie_t damageCreateCookie = xcb_damage_create_checked(conn, damage, window, XCB_DAMAGE_REPORT_LEVEL_RAW_RECTANGLES);
+
+	if ((error = xcb_request_check(conn, damageCreateCookie))) {
+		std::cerr << "ERROR: creating a new damage for window=" << window << std::endl;
+		delete error;
+	}
+
+	windowDamageHashmap[window] = damage;
+	std::cout << "(CREATE DAMAGE) new damage=" << damage << " created for window=" << window << std::endl;
 }
